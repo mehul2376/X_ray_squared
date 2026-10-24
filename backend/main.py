@@ -64,6 +64,7 @@ app = FastAPI(
 # ---------- CORS ----------
 # Production rule: only the exact deployed frontend origins are allowed.
 # "*" is accepted only when CORS_ALLOW_ALL=true is set explicitly (local/demo).
+# ---------- CORS ----------
 cors_origins = settings.CORS_ORIGINS
 allow_all = settings.CORS_ALLOW_ALL or "*" in cors_origins
 
@@ -76,24 +77,23 @@ if allow_all:
         allow_headers=["*"],
     )
     logger.warning(
-        "CORS is OPEN to all origins. Do not use this in production — set "
-        "CORS_ORIGINS to your deployed frontend origin(s)."
+        "CORS is OPEN to all origins. Do not use this in production."
     )
 else:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_origin_regex=settings.CORS_ALLOW_ORIGIN_REGEX or None,
+        allow_origin_regex=r"https://.*\.vercel\.app",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
 logger.info(
     "CORS allowed origins: %s (regex=%s)",
     cors_origins,
-    settings.CORS_ALLOW_ORIGIN_REGEX or "disabled",
+    r"https://.*\.vercel\.app",
 )
-
 
 # ---------- Static files ----------
 # Serve /uploads and /results so the frontend can load images via URL.
