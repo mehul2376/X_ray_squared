@@ -1,0 +1,47 @@
+# ===================================================================
+# X-RAY SQUARED — Backend dependencies
+# ===================================================================
+# Python 3.11 / 3.12 (Render: PYTHON_VERSION=3.12.8)
+# Local install:  pip install -r requirements.txt
+#
+# PyTorch is pinned to CPU-only wheels via the extra index URL below.
+# Without this, pip resolves the default CUDA build (~2.5 GB) which does not
+# fit Render's disk quota and fails the build. The S_RAY model runs on CPU.
+# ===================================================================
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20   # required for FastAPI UploadFile/Form parsing
+
+# --- Validation ---
+pydantic==2.10.4
+
+# --- Database ---
+sqlalchemy==2.0.36
+# psycopg2-binary is NOT installed by default — it requires libpq-dev on Linux and
+# causes Render build failures when using SQLite (the default DATABASE_URL).
+# Uncomment and add the line below ONLY if you switch DATABASE_URL to PostgreSQL:
+# psycopg2-binary==2.9.10
+
+# --- Image processing ---
+pillow==11.0.0
+opencv-python-headless==4.11.0.86
+numpy==2.2.1
+
+# --- ML ---
+torch==2.5.1
+torchvision==0.20.1
+keras==3.13.2
+ml-dtypes==0.5.1
+h5py==3.12.1
+optree==0.13.0
+
+# --- Misc ---
+python-dotenv==1.0.1
+
+# --- Testing (not required at runtime) ---
+pytest==8.3.4
+httpx==0.28.1

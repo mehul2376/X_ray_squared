@@ -1,0 +1,55 @@
+# ===================================================================
+# X-RAY SQUARED — Render Blueprint
+# ===================================================================
+# Scope: BACKEND ONLY (FastAPI + existing ML model).
+#
+# The frontend is deployed to VERCEL, not Render. Set NEXT_PUBLIC_API_URL on
+# the Vercel project to the URL of the service defined below.
+#
+# Deploy with: Render Dashboard -> New -> Blueprint -> point at this repo.
+# OR create a Web Service manually and use the values in DEPLOYMENT.md.
+# ===================================================================
+services:
+  - type: web
+    name: xray-squared-backend
+    runtime: python
+    plan: free
+    # backend/main.py is the entry point; backend/ is the root directory so the
+    # existing model paths (models/*.keras, s_ray_config.json) resolve unchanged.
+    rootDir: backend
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Keras must use the PyTorch backend for the S_RAY .keras models.
+      - key: KERAS_BACKEND
+        value: torch
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      # Existing trained models, shipped inside the repo.
+      - key: MODEL_PATH
+        value: models/S_RAY_Pneumonia_Model.keras
+      - key: GATE_MODEL_PATH
+        value: models/S_RAY_Xray_Gate.keras
+      - key: CONFIG_PATH
+        value: s_ray_config.json
+      # PROVIDE THIS VALUE: your Vercel production origin (no trailing slash).
+      # Render adds the *.vercel.app preview regex automatically.
+      - key: CORS_ORIGINS
+        sync: false
+      # Keep SQLite (default) or switch to a Render Postgres instance URL.
+      - key: DATABASE_URL
+        value: sqlite:///./xray_squared.db
+      - key: UPLOAD_DIR
+        value: uploads
+      - key: RESULT_DIR
+        value: results
+      - key: MAX_UPLOAD_MB
+        value: "10"
+      - key: HIGH_CONFIDENCE_THRESHOLD
+        value: "0.80"
+      - key: MEDIUM_CONFIDENCE_THRESHOLD
+        value: "0.60"
+      - key: CORS_ALLOW_ALL
+        value: "false"
