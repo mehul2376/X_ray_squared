@@ -1,15 +1,20 @@
 """Tests for API behavior — especially missing-model handling and validation."""
 from __future__ import annotations
 
+import asyncio
 import io
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from api import analyze as analyze_api
+from config import settings
 from main import app
 from services import prediction
 
@@ -49,6 +54,165 @@ def test_analyze_rejects_empty_file():
     assert response.status_code == 400
     body = response.json()
     assert body["detail"]["error"] == "INVALID_IMAGE"
+
+
+@pytest.mark.parametrize(
+    ("offset", "should_reach_processing"),
+    [(-1, True), (0, True), (1, False)],
+)
+def test_analyze_upload_size_boundaries(monkeypatch, offset, should_reach_processing):
+    limit_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    content = b"x" * (limit_bytes + offset)
+    processed_sizes = []
+
+    def process_upload(db, filename, content, content_type, reviewer_name=None):
+        processed_sizes.append(len(content))
+        raise HTTPException(status_code=418, detail="upload reached processing")
+
+    monkeypatch.setattr(analyze_api, "_process_single_image", process_upload)
+    response = client.post(
+        "/api/analyze",
+        files={"file": ("boundary.png", content, "image/png")},
+    )
+
+    if should_reach_processing:
+        assert response.status_code == 418
+        assert processed_sizes == [len(content)]
+    else:
+        assert response.status_code == 400
+        assert response.json()["detail"]["error"] == "INVALID_IMAGE"
+        assert "File too large:" in response.json()["detail"]["message"]
+        assert processed_sizes == []
+
+
+@pytest.mark.parametrize(
+    ("offset", "should_reach_processing"),
+    [(-1, True), (0, True), (1, False)],
+)
+def test_analyze_batch_upload_size_boundaries(
+    monkeypatch, offset, should_reach_processing
+):
+    limit_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    content = b"x" * (limit_bytes + offset)
+    processed_sizes = []
+
+    def process_upload(db, filename, content, content_type, reviewer_name=None):
+        processed_sizes.append(len(content))
+        raise HTTPException(status_code=418, detail="upload reached processing")
+
+    monkeypatch.setattr(analyze_api, "_process_single_image", process_upload)
+    response = client.post(
+        "/api/analyze-batch",
+        files=[("files", ("boundary.png", content, "image/png"))],
+    )
+
+    assert response.status_code == 200
+    item = response.json()["results"][0]
+    if should_reach_processing:
+        assert item["error"] == "upload reached processing"
+        assert processed_sizes == [len(content)]
+    else:
+        assert "File too large:" in item["error"]
+        assert processed_sizes == []
+
+
+def test_analyze_batch_continues_after_oversized_file(monkeypatch):
+    limit_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    oversized_content = b"x" * (limit_bytes + 1)
+    valid_content = _make_png_bytes()
+    processed_filenames = []
+
+    monkeypatch.setattr(analyze_api.prediction, "model_available", lambda: True)
+    monkeypatch.setattr(analyze_api.prediction, "is_keras_model", lambda: False)
+    monkeypatch.setattr(
+        analyze_api.prediction,
+        "validate_chest_xray",
+        lambda image, tensor: (True, "accepted", 1.0),
+    )
+    monkeypatch.setattr(
+        analyze_api.prediction,
+        "predict",
+        lambda tensor: ("NORMAL", 0.1, 0.9, 0.1),
+    )
+    monkeypatch.setattr(
+        analyze_api.preprocessing,
+        "preprocess_for_gradcam",
+        lambda image, is_keras: ("tensor", "image"),
+    )
+    monkeypatch.setattr(
+        analyze_api.gradcam, "generate_gradcam", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(analyze_api, "save_upload", lambda content, filename: filename)
+
+    original_process = analyze_api._process_single_image
+
+    def track_valid_processing(*args, **kwargs):
+        processed_filenames.append(kwargs["filename"])
+        return original_process(*args, **kwargs)
+
+    monkeypatch.setattr(analyze_api, "_process_single_image", track_valid_processing)
+    response = client.post(
+        "/api/analyze-batch",
+        files=[
+            ("files", ("oversized.png", oversized_content, "image/png")),
+            ("files", ("valid.png", valid_content, "image/png")),
+        ],
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert body["successful"] == 1
+    assert body["failed"] == 1
+    assert len(body["results"]) == 2
+
+    oversized_result, valid_result = body["results"]
+    assert oversized_result["filename"] == "oversized.png"
+    assert oversized_result["result"] is None
+    assert oversized_result["error"] == (
+        f"File too large: {(limit_bytes + 1) / (1024 * 1024):.2f}MB. "
+        f"Max allowed: {settings.MAX_UPLOAD_MB}MB."
+    )
+    assert valid_result["filename"] == "valid.png"
+    assert valid_result["error"] is None
+    assert valid_result["result"]["filename"] == "valid.png"
+    assert valid_result["result"]["prediction"] == "NORMAL"
+    assert processed_filenames == ["valid.png"]
+    assert body["batch_id"].startswith("BATCH-")
+
+
+@pytest.mark.parametrize(
+    ("offset", "should_be_accepted"),
+    [(-1, True), (0, True), (1, False)],
+)
+def test_upload_size_fallback_is_bounded_when_metadata_is_unavailable(
+    offset, should_be_accepted
+):
+    limit_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+
+    class UploadWithoutSize:
+        size = None
+
+        def __init__(self, content):
+            self.content = content
+            self.read_limit = None
+
+        async def read(self, size=-1):
+            self.read_limit = size
+            return self.content[:size]
+
+    upload = UploadWithoutSize(b"x" * (limit_bytes + offset))
+
+    if should_be_accepted:
+        content = asyncio.run(analyze_api._read_upload_content(upload))
+        assert len(content) == len(upload.content)
+    else:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(analyze_api._read_upload_content(upload))
+        assert exc_info.value.detail["error"] == "INVALID_IMAGE"
+        assert "File too large:" in exc_info.value.detail["message"]
+
+    assert upload.read_limit == limit_bytes + 1
 
 
 def test_analyze_handles_missing_model_gracefully():

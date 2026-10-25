@@ -28,6 +28,38 @@ logger = logging.getLogger("xray_squared.api.analyze")
 router = APIRouter()
 
 
+async def _read_upload_content(file: UploadFile) -> bytes:
+    """Read a file only after checking its size, with a bounded metadata fallback."""
+    limit_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    if file.size is not None and file.size > limit_bytes:
+        size_mb = file.size / (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "INVALID_IMAGE",
+                "message": (
+                    f"File too large: {size_mb:.2f}MB. "
+                    f"Max allowed: {settings.MAX_UPLOAD_MB}MB."
+                ),
+            },
+        )
+
+    content = await file.read(limit_bytes + 1)
+    if len(content) > limit_bytes:
+        size_mb = len(content) / (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "INVALID_IMAGE",
+                "message": (
+                    f"File too large: {size_mb:.2f}MB. "
+                    f"Max allowed: {settings.MAX_UPLOAD_MB}MB."
+                ),
+            },
+        )
+    return content
+
+
 def _process_single_image(
     db: Session,
     filename: str,
@@ -234,7 +266,7 @@ async def analyze(
     db: Session = Depends(get_db),
 ):
     """Analyze a single chest X-ray image."""
-    content = await file.read()
+    content = await _read_upload_content(file)
     return _process_single_image(
         db=db,
         filename=file.filename or "upload.jpg",
@@ -271,7 +303,7 @@ async def analyze_batch(files: List[UploadFile] = File(...)):
 
     for f in files:
         try:
-            content = await f.read()
+            content = await _read_upload_content(f)
             db = SessionLocal()
             try:
                 resp = _process_single_image(

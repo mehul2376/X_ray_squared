@@ -296,9 +296,11 @@ def validate_chest_xray(pil_img, tensor=None) -> Tuple[bool, str, float]:
         (is_xray: bool, reason: str, confidence: float in [0, 1])
     """
     import numpy as np
+    from PIL import ImageOps
 
     # 1. Chromatic check: genuine chest X-rays are monochromatic/radiographic
-    rgb = np.array(pil_img.convert("RGB"), dtype=np.float32)
+    analysis_img = ImageOps.contain(pil_img, (512, 512))
+    rgb = np.array(analysis_img.convert("RGB"), dtype=np.float32)
     mean_dev = float((
         np.abs(rgb[:, :, 0] - rgb[:, :, 1]).mean()
         + np.abs(rgb[:, :, 0] - rgb[:, :, 2]).mean()
@@ -309,6 +311,7 @@ def validate_chest_xray(pil_img, tensor=None) -> Tuple[bool, str, float]:
         + np.std(rgb[:, :, 0] - rgb[:, :, 2])
         + np.std(rgb[:, :, 1] - rgb[:, :, 2])
     )
+    del rgb
 
     if mean_dev > 10.0 or color_complexity > 50.0:
         return (
@@ -318,9 +321,10 @@ def validate_chest_xray(pil_img, tensor=None) -> Tuple[bool, str, float]:
         )
 
     # 2. Radiographic density & contrast check
-    gray = np.array(pil_img.convert("L"), dtype=np.float32)
+    gray = np.array(analysis_img.convert("L"), dtype=np.float32)
     mean_val = float(gray.mean())
     std_val = float(gray.std())
+    del gray, analysis_img
     if mean_val > 230 or mean_val < 15:
         return False, "Image lacks radiographic density variation.", 0.0
     if std_val < 18:

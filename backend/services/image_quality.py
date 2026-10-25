@@ -25,6 +25,7 @@ MIN_RESOLUTION_PX = 200       # Below this, mark as WARNING
 MIN_BRIGHTNESS_MEAN = 40      # Below this, image is too dark
 MAX_BRIGHTNESS_MEAN = 220     # Above this, image is too bright
 MIN_CONTRAST_STD = 25         # Below this, image is too flat
+SHARPNESS_TILE_ROWS = 256
 
 
 def _check_resolution(img: Image.Image) -> QualityStatus:
@@ -55,6 +56,39 @@ def _check_contrast(gray: np.ndarray) -> QualityStatus:
     return "GOOD"
 
 
+def _tiled_laplacian_variance(gray: np.ndarray) -> float:
+    import cv2
+
+    height, width = gray.shape
+    pixel_count = height * width
+    laplacian_sum = 0.0
+
+    for row_start in range(0, height, SHARPNESS_TILE_ROWS):
+        row_stop = min(height, row_start + SHARPNESS_TILE_ROWS)
+        source_start = max(0, row_start - 1)
+        source_stop = min(height, row_stop + 1)
+        lap = cv2.Laplacian(gray[source_start:source_stop], cv2.CV_64F)
+        core = lap[row_start - source_start:row_stop - source_start]
+        laplacian_sum += float(core.sum(dtype=np.float64))
+        del core, lap
+
+    mean = laplacian_sum / pixel_count
+    squared_deviations = 0.0
+
+    for row_start in range(0, height, SHARPNESS_TILE_ROWS):
+        row_stop = min(height, row_start + SHARPNESS_TILE_ROWS)
+        source_start = max(0, row_start - 1)
+        source_stop = min(height, row_stop + 1)
+        lap = cv2.Laplacian(gray[source_start:source_stop], cv2.CV_64F)
+        core = lap[row_start - source_start:row_stop - source_start]
+        core -= mean
+        np.square(core, out=core)
+        squared_deviations += float(core.sum(dtype=np.float64))
+        del core, lap
+
+    return squared_deviations / pixel_count
+
+
 def _check_sharpness(gray: np.ndarray) -> tuple[QualityStatus, float]:
     """Check image sharpness using Laplacian variance.
 
@@ -67,9 +101,7 @@ def _check_sharpness(gray: np.ndarray) -> tuple[QualityStatus, float]:
     against a clinically verified chest X-ray dataset before any diagnostic use.
     """
     try:
-        import cv2
-        lap = cv2.Laplacian(gray.astype(np.float64), cv2.CV_64F)
-        var = float(lap.var())
+        var = _tiled_laplacian_variance(gray)
     except Exception:
         # Fallback 2D convolution with 3x3 Laplacian kernel
         kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=np.float32)
@@ -79,6 +111,7 @@ def _check_sharpness(gray: np.ndarray) -> tuple[QualityStatus, float]:
         sub_matrices = np.lib.stride_tricks.sliding_window_view(gray, (kh, kw))
         lap = np.einsum('ijkl,kl->ij', sub_matrices, kernel)
         var = float(lap.var())
+        del lap
 
     if var < settings.BLUR_THRESHOLD_POOR:
         status: QualityStatus = "POOR"
@@ -108,7 +141,7 @@ def assess_quality(img: Image.Image) -> ImageQuality:
     is approximated by contrast for now (a real QC model would replace this).
     """
     try:
-        gray = np.array(img.convert("L"), dtype=np.float32)
+        gray = np.asarray(img.convert("L"), dtype=np.uint8)
         brightness = _check_brightness(gray)
         contrast = _check_contrast(gray)
         resolution = _check_resolution(img)
